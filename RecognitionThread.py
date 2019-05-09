@@ -9,14 +9,8 @@ import cv2
 import dlib
 import keras
 from keras.utils.generic_utils import CustomObjectScope
-from compute_features import lifted_struct_loss, triplet_loss
-import h5py
-import faiss
-
 
 class RecognitionThread(threading.Thread):
-
-    CELEB_RECOG_BUFFER = 15  # How many recognitions to store for picking the most common
 
     def __init__(self, parent, params):
         print("Initializing recognition thread...")
@@ -50,41 +44,10 @@ class RecognitionThread(threading.Thread):
         self.expressions = {int(key): val for key, val in params['expressions'].items()}  # convert string key to int
         self.minDetections = int(params.get("recognition", "mindetections"))
 
-        ##### 2. CELEBRITY
-        self.siamesepaths = params['celebmodels']
-        self.siamesepath = self.siamesepaths["0"]
-        self.celeb_dataset = params.get("recognition", "celeb_dataset")
-        self.visualization_path = params.get("recognition", "visualization_path")
-        self.initialize_celeb()
-
         # Starting the thread
         self.switching_model = False
         self.recognition_running = False
         print("Recognition thread started...")
-
-    def initialize_celeb(self):
-        print("Initializing celebrity network...")
-
-        with CustomObjectScope({'relu6': keras.layers.ReLU(6.),
-                                'DepthwiseConv2D': keras.layers.DepthwiseConv2D,
-                                'lifted_struct_loss': lifted_struct_loss,
-                                'triplet_loss': triplet_loss}):
-            self.siameseNet = keras.models.load_model(os.path.join(self.siamesepath, "feature_model.h5"))
-
-        self.siameseNet._make_predict_function()
-
-        ##### Read celebrity features
-        celebrity_features = self.siamesepath + os.sep + "features_" + self.celeb_dataset + ".h5"
-        print("Reading celebrity data from {}...".format(celebrity_features))
-
-        with h5py.File(celebrity_features, "r") as h5:
-            celeb_features = np.array(h5["features"]).astype(np.float32)
-            self.path_ends = list(h5["path_ends"])
-            self.celeb_files = [os.path.join(self.visualization_path, s.decode("utf-8")) for s in self.path_ends]
-
-        print("Building index...")
-        self.celeb_index = faiss.IndexFlatL2(celeb_features.shape[1])
-        self.celeb_index.add(celeb_features)
 
     def crop_face(self, img, rect, margin=0.2):
         x1 = rect.left()
@@ -234,12 +197,8 @@ class RecognitionThread(threading.Thread):
 
                     crop = crop.astype(np.float32)
 
-                    siamese_target_size = self.siameseNet.input_shape[1:3]
-                    crop_celeb = cv2.resize(crop, siamese_target_size).astype(np.float32)
-
                     # Preprocess network inputs, add singleton batch dimension
                     recog_input = np.expand_dims(crop / 255, axis=0)
-                    siamese_input = np.expand_dims(crop_celeb / 255, axis=0)
 
                     # Recognize age, gender and smile in one forward pass
 
@@ -262,61 +221,4 @@ class RecognitionThread(threading.Thread):
                     expression = self.expressions[t]
                     face["expression"] = expression
 
-                    # Find closest celebrity match if new face or once every 5 rounds
-                    if "celebs" not in face or face["recog_round"] % 5 == 0:
-                        siamese_features = self.siameseNet.predict(siamese_input)
-                        K = 1  # This many nearest matches
-                        celeb_distance, I = self.celeb_index.search(siamese_features, K)
-                        celeb_idx = I[0][0]
-                        celeb_filename = self.celeb_files[celeb_idx]
-
-                        if "celebs" in face:
-                            celebs = face["celebs"]
-                            recognitions = celebs["recognitions"]
-
-                            # Maintain a buffer of closest matches and pick the most common one for stability
-                            if recognitions < RecognitionThread.CELEB_RECOG_BUFFER:
-                                celebs["indexes"].append(celeb_idx)
-                            else:
-                                celebs["indexes"][recognitions % RecognitionThread.CELEB_RECOG_BUFFER] = celeb_idx
-
-                            celebs[celeb_idx] = Celebinfo(filename=celeb_filename, distance=celeb_distance)
-                            celebs["recognitions"] += 1
-                        else:
-                            face["celebs"] = {
-                                "indexes": [celeb_idx],
-                                celeb_idx: Celebinfo(filename=celeb_filename, distance=celeb_distance),
-                                "recognitions": 1}
-
                     face["recog_round"] += 1
-
-    # Support for switching celebrity model on the fly
-    def switch_model(self, modelidx):
-
-        self.siamesepath = self.siamesepaths[modelidx]
-
-        print("Switching to", self.siamesepath)
-        print("Stopping recognition thread...")
-        self.switching_model = True
-
-        # Wait for recognition thread to finish and stop before changing
-        while self.recognition_running:
-            time.sleep(0.1)
-
-        self.initialize_celeb()
-
-        print("Switching model complete. Resuming recognition thread...")
-        self.switching_model = False
-
-    def print_models(self):
-        idx = 0
-        while str(idx) in self.siamesepaths:
-            desc = self.siamesepaths.get("{}_desc".format(idx), "")
-            modelpath = self.siamesepaths[str(idx)]
-            currentindicator = "<----- CURRENT MODEL" if modelpath == self.siamesepath else ""
-            if desc:
-                print("{}: {}, {} {}".format(idx, modelpath, desc, currentindicator))
-            else:
-                print("{}: {} {}".format(idx, modelpath, currentindicator))
-            idx += 1
-

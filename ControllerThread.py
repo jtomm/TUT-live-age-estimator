@@ -72,17 +72,8 @@ class ControllerThread(threading.Thread):
 
     def commandInterface(self):
         while True:
-            text = input("Enter command (Q)uit, (L)ist models, (S)witch model: ").lower()
-            if text == "l":
-                self.recognitionThread.print_models()
-            elif text == "s":
-                idx = input("Please input a new index: ")
-                try:
-                    self.recognitionThread.switch_model(idx)
-                except KeyError as e:
-                    print("No such model index", e)
-
-            elif text == "q":
+            text = input("Enter command (Q)uit: ").lower()
+            if text == "q":
                 print("Bye!")
                 self.terminate()
                 break
@@ -170,46 +161,6 @@ class ControllerThread(threading.Thread):
         pt2 = (int(x + w - m * w), y + h)
         cv2.line(img, pt1, pt2, color = [255,255,0], thickness = 2)
 
-    def AddCeleb(self, face, img, x, y, w, h):
-
-        celebs = face["celebs"]
-        indexes = celebs["indexes"]
-        most_common = max(set(indexes), key=indexes.count)
-
-        filename = celebs[most_common].filename
-        distance = celebs[most_common].distance
-        identity = filename.split(os.sep)[-2]
-
-        celeb_img = cv2.imread(filename)
-        aspect_ratio = celeb_img.shape[1] / celeb_img.shape[0]
-        new_w = w
-        new_h = int(w/aspect_ratio)
-        if new_h > h:
-            new_h = h
-        try:
-            celeb_img = cv2.resize(celeb_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        except AssertionError:  # new_w or new_h is 0 ie bounding box size is 0
-            return None
-
-        # Cut out pixels overflowing image on the right
-        x_end = x + w + new_w
-        if x_end > img.shape[1]:
-            remove_pixels = x_end - img.shape[1]
-            celeb_img = celeb_img[:, :-remove_pixels, :]
-            new_w -= remove_pixels
-
-        # Cut out pixels overflowing image on the bottom
-        y_offset = h - new_h
-        y_end = y + y_offset + new_h
-        if y_end > img.shape[0]:
-            remove_pixels = y_end - img.shape[0]
-            celeb_img = celeb_img[:-remove_pixels, ...]
-            new_h -= remove_pixels
-
-        if celeb_img.size:
-            img[y + y_offset: y + y_offset + new_h, x + w: x + w + new_w, :] = celeb_img
-            return identity
-
     def drawFace(self, face, img):
         
         bbox = np.mean(face['bboxes'], axis = 0)
@@ -224,8 +175,6 @@ class ControllerThread(threading.Thread):
         # Clamp bounding box top to image
         y = 0 if y < 0 else y
 
-        if "celebs" in face.keys():
-            celeb_identity = self.AddCeleb(face, img, x, y, w, h)
 
         # Check if text can overlap the celeb texts (goes past the bounding box), if so decrease size
         text_size = self.textBaseScale
@@ -261,21 +210,6 @@ class ControllerThread(threading.Thread):
             annotation = "%s" % (expression)
             txtLoc = (x, y + h + 90)
             self.writeText(img, annotation, txtLoc, text_size)
-
-        if celeb_identity:
-            annotation = "CELEBRITY"
-            txtLoc = (x + w, y + h + 30)
-            self.writeText(img, annotation, txtLoc, text_size)
-
-            annotation = "TWIN"  # (%.0f %%)" % (100*np.exp(-face["celeb_distance"]))
-            txtLoc = (x + w, y + h + 60)
-            self.writeText(img, annotation, txtLoc, text_size)
-
-            # Celebrity name. This only works if celebrities are in their own named directories,
-            # which is not the case with the CelebA dataset provided.
-            #annotation = celeb_identity
-            #txtLoc = (x + w, y + h + 90)
-            #self.writeText(img, annotation, txtLoc, text_size)
 
         # DEBUG ONLY - Visualize aligned face crop in corner.
         if self.debug and "crop" in face.keys():
